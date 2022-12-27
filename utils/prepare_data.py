@@ -20,7 +20,7 @@ def FPS_np(xyz, npoint):
 
 
 def FPS_cuda(points, npoint):
-    points_cuda = torch.from_numpy(points).float().to("cuda:0")
+    points_cuda = torch.from_numpy(points).float().cuda()
     points_cuda = points_cuda.unsqueeze(0)
     with torch.no_grad():
         index_cuda = pointnet2_utils.furthest_point_sample(

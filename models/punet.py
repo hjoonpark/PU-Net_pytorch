@@ -72,7 +72,6 @@ class PUNet(nn.Module):
         print("PUNET initialized")
 
     def forward(self, points, npoint=None):
-        print("forward:", points.shape)
         if npoint is None:
             npoints = [None] * len(self.npoints)
         else:
@@ -118,7 +117,7 @@ class PUNet(nn.Module):
 
 
 if __name__ == '__main__':
-    model = PUNet(up_ratio=2, use_normal=True).to("cuda:0")
-    points = torch.randn([1, 1024, 6]).float().to("cuda:0")
+    model = PUNet(up_ratio=2, use_normal=True).cuda()
+    points = torch.randn([1, 1024, 6]).float().cuda()
     output = model(points)
     print(output.shape)

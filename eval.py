@@ -51,7 +51,7 @@ if __name__ == '__main__':
 
     checkpoint = torch.load(args.resume)
     model.load_state_dict(checkpoint['model_state'])
-    model.eval().to("cuda:0")
+    model.eval().cuda()
 
     eval_dst = PUNET_Dataset(h5_file_path='./datas/Patches_noHole_and_collected.h5', split='test', is_training=False)
     eval_loader = DataLoader(eval_dst, batch_size=args.batch_size, 
@@ -62,9 +62,9 @@ if __name__ == '__main__':
     with torch.no_grad():
         for itr, batch in enumerate(eval_loader):
             points, gt, radius = batch
-            points = points[..., :3].float().to("cuda:0").contiguous()
-            gt = gt[..., :3].float().to("cuda:0").contiguous()
-            radius = radius.float().to("cuda:0")
+            points = points[..., :3].float().cuda().contiguous()
+            gt = gt[..., :3].float().cuda().contiguous()
+            radius = radius.float().cuda()
             preds = model(points, npoint=None) #points.shape[1])
 
             emd = get_emd_loss(preds, gt, radius)

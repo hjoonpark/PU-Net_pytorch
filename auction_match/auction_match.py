@@ -24,7 +24,7 @@ class AuctionMatch(torch.autograd.Function):
              match_right: (B, N) tensor containing the set
         """
         assert xyz1.is_contiguous() and xyz2.is_contiguous()
-        assert xyz1.shape[1] <= 4096
+        # assert xyz1.shape[1] <= 4096
 
         B, N, _ = xyz1.size()
         match_left = torch.cuda.IntTensor(B, N)
@@ -42,9 +42,9 @@ auction_match = AuctionMatch.apply
 
 if __name__ == '__main__':
     import numpy as np
-    # p1 = torch.randn(1, 128, 3).float().to("cuda:0")
-    # p2 = torch.randn(1, 128, 3).float().to("cuda:0")
-    p1 = torch.from_numpy(np.array([[[1,0,0], [2,0,0], [3,0,0], [4,0,0]]], dtype=np.float32)).to("cuda:0")
-    p2 = torch.from_numpy(np.array([[[-10,0,0], [1,0, 0], [2,0, 0], [3,0,0]]], dtype=np.float32)).to("cuda:0")
+    # p1 = torch.randn(1, 128, 3).float().cuda()
+    # p2 = torch.randn(1, 128, 3).float().cuda()
+    p1 = torch.from_numpy(np.array([[[1,0,0], [2,0,0], [3,0,0], [4,0,0]]], dtype=np.float32)).cuda()
+    p2 = torch.from_numpy(np.array([[[-10,0,0], [1,0, 0], [2,0, 0], [3,0,0]]], dtype=np.float32)).cuda()
     ml, mr = auction_match(p2, p1)
     print(ml, mr)

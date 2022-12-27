@@ -27,10 +27,10 @@ class ChamferDistanceFunction(torch.autograd.Function):
         if not xyz1.is_cuda:
             cd.forward(xyz1, xyz2, dist1, dist2, idx1, idx2)
         else:
-            dist1 = dist1.to("cuda:0")
-            dist2 = dist2.to("cuda:0")
-            idx1 = idx1.to("cuda:0")
-            idx2 = idx2.to("cuda:0")
+            dist1 = dist1.cuda()
+            dist2 = dist2.cuda()
+            idx1 = idx1.cuda()
+            idx2 = idx2.cuda()
             cd.forward_cuda(xyz1, xyz2, dist1, dist2, idx1, idx2)
 
         ctx.save_for_backward(xyz1, xyz2, idx1, idx2)
@@ -52,8 +52,8 @@ class ChamferDistanceFunction(torch.autograd.Function):
                 xyz1, xyz2, gradxyz1, gradxyz2, graddist1, graddist2, idx1, idx2
             )
         else:
-            gradxyz1 = gradxyz1.to("cuda:0")
-            gradxyz2 = gradxyz2.to("cuda:0")
+            gradxyz1 = gradxyz1.cuda()
+            gradxyz2 = gradxyz2.cuda()
             cd.backward_cuda(
                 xyz1, xyz2, gradxyz1, gradxyz2, graddist1, graddist2, idx1, idx2
             )

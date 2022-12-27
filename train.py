@@ -66,6 +66,7 @@ class UpsampleLoss(nn.Module):
         return cost
 
     def get_repulsion_loss(self, pred):
+        print("pred:", pred.shape, pred.dtype, pred.device, pred.is_contiguous(), pred.min().item(), pred.max().item(), pred.mean().item())
         _, idx = knn_point(self.nn_size, pred, pred, transpose_mode=True)
         idx = idx[:, :, 1:].to(torch.int32) # remove first one
         idx = idx.contiguous() # B, N, nn
@@ -75,7 +76,7 @@ class UpsampleLoss(nn.Module):
 
         grouped_points = grouped_points - pred.unsqueeze(-1)
         dist2 = torch.sum(grouped_points ** 2, dim=1)
-        dist2 = torch.max(dist2, torch.tensor(self.eps).to("cuda:0"))
+        dist2 = torch.max(dist2, torch.tensor(self.eps).cuda())
         dist = torch.sqrt(dist2)
         weight = torch.exp(- dist2 / self.h ** 2)
 
@@ -118,26 +119,23 @@ if __name__ == '__main__':
     print("========================================")
     train_dst = PUNET_Dataset(npoint=args.npoint, 
             use_random=True, use_norm=True, split='train', is_training=True)
-    print("train_dst:", train_dst)
+    print("train_dst:", len(train_dst))
     train_loader = DataLoader(train_dst, batch_size=args.batch_size, 
                         shuffle=True, pin_memory=True, num_workers=args.workers)
-    print("train_loader:", train_loader)
+    print("train_loader:", len(train_loader))
     print('models.' + args.model)
     MODEL = importlib.import_module('models.' + args.model)
-    print("MODEL:", MODEL)
     model = MODEL.get_model(npoint=args.npoint, up_ratio=args.up_ratio, 
                 use_normal=False, use_bn=args.use_bn, use_res=args.use_res)
-    print("MODEL:", MODEL)
-    # model.to("cuda:0")
-    model = model.to("cuda:0")
-    print("MODEL:", MODEL)
+    # model.cuda()
+    model = model.cuda()
     
     optimizer, lr_scheduler = get_optimizer()
     loss_func = UpsampleLoss(alpha=args.alpha)
 
     model.train()
     for epoch in range(args.max_epoch):
-        print("epoch:", epoch)
+        print("epoch:", epoch, "/", args.max_epoch)
         loss_list = []
         emd_loss_list = []
         rep_loss_list = []
@@ -145,10 +143,10 @@ if __name__ == '__main__':
             optimizer.zero_grad()
             input_data, gt_data, radius_data = batch
 
-            input_data = input_data.float().to("cuda:0")
-            gt_data = gt_data.float().to("cuda:0")
+            input_data = input_data.float().cuda()
+            gt_data = gt_data.float().cuda()
             gt_data = gt_data[..., :3].contiguous()
-            radius_data = radius_data.float().to("cuda:0")
+            radius_data = radius_data.float().cuda()
 
             preds = model(input_data)
             emd_loss, rep_loss = loss_func(preds, gt_data, radius_data)
