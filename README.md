@@ -2,6 +2,23 @@
 
 PyTorch implementation of PU-Net. Official TF implementation: [punet_tf](https://github.com/yulequan/PU-Net). This repo is tested with PyTorch 1.2, cuda 10.0 and Python 3.6.
 
+---
+## 2022-12-26 Log
+## Working version:
+
+    python: 3.9.12
+    pytorch: 1.13.1
+    torch.version.cuda: 11.6
+    h5py 3.7.0
+
+## Trouble shooting
+
+- `<THC/THC.h>` related: https://github.com/sshaoshuai/Pointnet2.PyTorch/issues/34
+- Test PUNet by running
+  
+      python punet_test.py
+
+---
 ### 1. Installation
 
 Follow [Pointnet2.PyTorch](https://github.com/sshaoshuai/Pointnet2.PyTorch) to compile pointnet utils. Or run the following commands.

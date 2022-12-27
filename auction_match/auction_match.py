@@ -42,9 +42,9 @@ auction_match = AuctionMatch.apply
 
 if __name__ == '__main__':
     import numpy as np
-    # p1 = torch.randn(1, 128, 3).float().cuda()
-    # p2 = torch.randn(1, 128, 3).float().cuda()
-    p1 = torch.from_numpy(np.array([[[1,0,0], [2,0,0], [3,0,0], [4,0,0]]], dtype=np.float32)).cuda()
-    p2 = torch.from_numpy(np.array([[[-10,0,0], [1,0, 0], [2,0, 0], [3,0,0]]], dtype=np.float32)).cuda()
+    # p1 = torch.randn(1, 128, 3).float().to("cuda:0")
+    # p2 = torch.randn(1, 128, 3).float().to("cuda:0")
+    p1 = torch.from_numpy(np.array([[[1,0,0], [2,0,0], [3,0,0], [4,0,0]]], dtype=np.float32)).to("cuda:0")
+    p2 = torch.from_numpy(np.array([[[-10,0,0], [1,0, 0], [2,0, 0], [3,0,0]]], dtype=np.float32)).to("cuda:0")
     ml, mr = auction_match(p2, p1)
     print(ml, mr)

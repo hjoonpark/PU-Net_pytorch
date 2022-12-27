@@ -139,7 +139,7 @@ class PointNet2_SSG(nn.Module):
 
 
 if __name__ == '__main__':
-    model = PointNet2_SSG(up_ratio=2, use_normal=False).cuda()
-    points = torch.randn([1, 1024, 3]).float().cuda()
+    model = PointNet2_SSG(up_ratio=2, use_normal=False).to("cuda:0")
+    points = torch.randn([1, 1024, 3]).float().to("cuda:0")
     output = model(points)
     print(output.shape)

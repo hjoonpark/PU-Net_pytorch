@@ -32,7 +32,7 @@ if __name__ == '__main__':
 
     checkpoint = torch.load(args.resume)
     model.load_state_dict(checkpoint['model_state'])
-    model.eval().cuda()
+    model.eval().to("cuda:0")
 
     eval_dst = PUNET_Dataset_Whole(data_dir='./datas/test_data/our_collected_data/MC_5k')
     eval_loader = DataLoader(eval_dst, batch_size=1, 
@@ -41,7 +41,7 @@ if __name__ == '__main__':
     names = eval_dst.names
     for itr, batch in enumerate(eval_loader):
         name = names[itr]
-        points = batch.float().cuda()
+        points = batch.float().to("cuda:0")
         preds = model(points, npoint=points.shape[1])
         
         preds = preds.data.cpu().numpy()

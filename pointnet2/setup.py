@@ -6,7 +6,6 @@ setup(
     ext_modules=[
         CUDAExtension('pointnet2_cuda', [
             'src/pointnet2_api.cpp',
-            
             'src/ball_query.cpp', 
             'src/ball_query_gpu.cu',
             'src/group_points.cpp', 
@@ -17,7 +16,8 @@ setup(
             'src/sampling_gpu.cu',
         ],
         extra_compile_args={'cxx': ['-g'],
-                            'nvcc': ['-O2']})
+                            'nvcc': ['-O2']}
+                            )
     ],
     cmdclass={'build_ext': BuildExtension}
 )
