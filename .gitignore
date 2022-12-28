@@ -1,3 +1,6 @@
+datas/
+output/
+output*/
 KNN_CUDA/
 datas/test_data
 datas/*.h5

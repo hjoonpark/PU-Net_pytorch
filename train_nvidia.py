@@ -1,9 +1,12 @@
 import matplotlib.pyplot as plt
 
 import argparse
-import os
+import os, shutil, json, time, glob
 
-from utils_mine import Logger, Plotter, GPUStat
+import torch.nn.functional as F
+from torch_scatter import scatter_mean
+
+from utils_mine import Logger, Plotter, GPUStat, make_output_folders
 from utils_mine.log import get_loss_string
 from utils_mine.obj_writer import write_obj_triangle
 parser = argparse.ArgumentParser(description="Arg parser")
@@ -90,7 +93,6 @@ class UpsampleLoss(nn.Module):
         dist2 = dist2.view(dist2.shape[0], -1) # <-- ???
         dist2 = torch.mean(dist2, dim=1, keepdims=True) # B,
         dist2 /= pcd_radius
-        print(">> get_emd_loss")
         return torch.mean(dist2)
 
     def get_cd_loss(self, pred, gt, pcd_radius):
@@ -101,44 +103,27 @@ class UpsampleLoss(nn.Module):
         return cost
 
     def get_repulsion_loss(self, pred):
-        print("1: get_repulsion_loss")
-        print("pred:", pred.shape, pred.dtype, pred.device, pred.is_contiguous(), pred.min().item(), pred.max().item(), pred.mean().item())
         _, idx = knn_point(self.nn_size, pred, pred, transpose_mode=True)
         # torch.Size([6, 40816, 4])
-        print(">>",idx.shape)
-        print("1: get_repulsion_loss")
         idx = idx[:, :, 1:].to(torch.int32) # remove first one
-        print("1: get_repulsion_loss")
         idx = idx.contiguous() # B, N, nn
 
-        print("3: get_repulsion_loss")
         pred = pred.transpose(1, 2).contiguous() # B, 3, N
-        print("3: get_repulsion_loss")
-        print(pred.shape)
-        print(idx.shape)
         grouped_points = pn2_utils.grouping_operation(pred, idx) # (B, 3, N), (B, N, nn) => (B, 3, N, nn)
-        print("3: get_repulsion_loss")
 
         grouped_points = grouped_points - pred.unsqueeze(-1)
-        print("1: get_repulsion_loss")
         dist2 = torch.sum(grouped_points ** 2, dim=1)
         dist2 = torch.max(dist2, torch.tensor(self.eps).cuda())
         dist = torch.sqrt(dist2)
         weight = torch.exp(- dist2 / self.h ** 2)
-        print("2: get_repulsion_loss")
 
         uniform_loss = torch.mean((self.radius - dist) * weight)
-        print("3: get_repulsion_loss")
         # uniform_loss = torch.mean(self.radius - dist * weight) # punet
-        print(">> get_repulsion_loss")
         return uniform_loss
 
     def forward(self, pred, gt, pcd_radius):
-        print("loss:", pred.shape, gt.shape, pcd_radius.shape)
         emd_loss = self.get_emd_loss(pred, gt, pcd_radius) * 100
-        print("emd_loss:", emd_loss.shape)
         rep_loss = self.get_repulsion_loss(pred)
-        print("rep_loss:", rep_loss.shape)
         return emd_loss, self.alpha * rep_loss
 
 def get_optimizer():
@@ -165,14 +150,33 @@ def get_optimizer():
     else:
         return optimizer, None
 
+def as_np(x):
+    return x.detach().cpu().numpy()
+
+def stitch(patches, trg_shape, index):
+    if patches.device != index.device:
+        patches = patches.cuda()
+        index = index.cuda()
+    out1 = torch.zeros(trg_shape)[:,0].to(patches.device)
+    out2 = torch.zeros(trg_shape)[:,1].to(patches.device)
+    out3 = torch.zeros(trg_shape)[:,2].to(patches.device)
+    idx = index.reshape(-1)
+    src1 = patches[:, :, 0].reshape(-1)
+    src2 = patches[:, :, 1].reshape(-1)
+    src3 = patches[:, :, 2].reshape(-1)
+    out1 = scatter_mean(src1, idx, out=out1)[:, None]
+    out2 = scatter_mean(src2, idx, out=out2)[:, None]
+    out3 = scatter_mean(src3, idx, out=out3)[:, None]
+    out = torch.cat((out1, out2, out3), dim=1)
+    return out.cpu()
 
 params = {
   "batch_size": 1,
   "n_epochs": 100000000,
   "print_freq": 1,
-  "val_freq": 50,
-  "chkpt_freq": 50,
-  "starting_epoch": 2900,
+  "val_freq": 5,
+  "chkpt_freq": 5,
+  "starting_epoch": 0,
   "lr": 0.0001,
   "drop_out": 0.2,
   "knn": 5,
@@ -188,28 +192,68 @@ params = {
 }
 if __name__ == '__main__':
     set_all_seeds(0)
-    out_dir = args.log_dir
+
+    root_dir = "/nobackup/joon/1_Projects/PU-Net_pytorch"
+    output_dir = os.path.join(root_dir, "output_nvidia")
+
+    # ========================================================================
+    out_dirs = make_output_folders(output_dir, ['log', 'model', 'trobj', 'val'], makedirs=True)
+    log_path = os.path.join(out_dirs['log'], 'loss_log.txt')
+    plot_path = os.path.join(out_dirs['log'], "loss_plot.jpg")
+    logger = Logger(os.path.join(out_dirs["log"], "log.txt"))
+    plotter = Plotter()
+    gpu_stat = GPUStat()
+    
     args.batch_size = params["batch_size"]
 
-    gpu_stat = GPUStat()
-    logger = Logger(os.path.join(out_dir, "log.txt"))
     logger.print("========================================")
     logger.print("{}".format(args))
     logger.print("========================================")
-    
-    load_opt = ["metadata", "face_normals"]
-    from dataset_nvidia.nvidia_face_dataset_v4 import DatasetVertxDx
+
+    try:
+        ml_path = os.path.join(out_dirs["model"], "model_losses.json")
+        model_losses = json.load(open(ml_path, "r"))
+    except:
+        model_losses = {} # {folder_name: {'val': }}
+
+
+    losses_per_epoch = {}
+    val_losses_per_epoch = {"mean": []}
+    val_epochs = []
+
+    from dataset_nvidia.nvidia_face_punet_4 import DatasetGroupedPatch
+    validation_frames = {
+        "fear": [130, 99],
+        "anger": [9, 112]
+    }
+    trobj_frames = {
+        "pain": [123]
+    }
+    dataset_val = DatasetGroupedPatch(frames_to_load=validation_frames)
+    dataset_trobj = DatasetGroupedPatch(frames_to_load=trobj_frames)
+    loader_val = DataLoader(dataset_val, batch_size=1, shuffle=False, pin_memory=True, num_workers=args.workers)
+    loader_trobj = DataLoader(dataset_trobj, batch_size=1, shuffle=False, pin_memory=True, num_workers=args.workers)
+    logger.print("dataset_trobj: {}, dataset_val: {}".format(len(dataset_trobj), len(dataset_val)))
+    # ========================================================================
+
+    load_opt = ["metadata"]
+    from dataset_nvidia.nvidia_face_punet_4 import DatasetVertxDx
     dataset_tr = DatasetVertxDx(is_train=True, load_opt=load_opt, logger=logger)
     sd = dataset_tr.static_data
+    # save normalization data
+    save_path = os.path.join(out_dirs["log"], "mu_sigma.json")
+    out = {
+        "hmu": sd["hmu"], "hsigma": sd["hsigma"]
+    }
+    json.dump(out, open(save_path, "w+"), indent=4)
 
     logger.print("dataset_tr:", len(dataset_tr))
-    train_loader = DataLoader(dataset_tr, batch_size=args.batch_size, 
-                        shuffle=True, pin_memory=True, num_workers=args.workers)
+    train_loader = DataLoader(dataset_tr, batch_size=args.batch_size, shuffle=True, pin_memory=True, num_workers=args.workers)
                         
     print("train_loader:", len(train_loader))
     logger.print('models.' + args.model)
-    MODEL = importlib.import_module('models.' + args.model)
-    model = MODEL.get_model(npoint=sd["n_ldx"], up_ratio=args.up_ratio, 
+    MODEL = importlib.import_module('models.' + args.model + "_nvidia")
+    model = MODEL.get_model(npoint=sd["n_lx"], up_ratio=args.up_ratio, 
                 use_normal=False, use_bn=args.use_bn, use_res=args.use_res)
     # model.cuda()
     model = model.cuda()
@@ -223,9 +267,18 @@ if __name__ == '__main__':
     logger.print("n_trainable_params={:,}".format(n_trainable_params))
 
     radius_data0 = torch.tensor([sd["hsigma"]]).float().cuda()[None, :]
-    
+    epoch0 = params['starting_epoch']
+
+    lres_clusters = sd["lres_clusters"]
+    hres_clusters = sd["hres_clusters"]
+    lshape = sd['lrestshape'].shape
+    hshape = sd['hrestshape'].shape
+    sigma = sd['hsigma']
     torch.cuda.empty_cache()
     for epoch in range(args.max_epoch):
+        model.train()
+        loss_curr = {}
+        save_plots = ((epoch-epoch0) == 0 or epoch % params['val_freq'] == 0)
 
         loss_list = []
         emd_loss_list = []
@@ -235,37 +288,8 @@ if __name__ == '__main__':
             lx_pos = batch["lx_pos"].cuda()
             hx_pos = batch["hx_pos"].cuda()
             radius_data = radius_data0.repeat(lx_pos.shape[0], 1)
-            print("lx_pos:", stat(lx_pos.cpu().numpy()))
-            print("hx_pos:", stat(hx_pos.cpu().numpy()))
-            print("radius_data:", stat(radius_data.cpu().numpy()))
-
-            # save_path = os.path.join(out_dir, "{}_input.jpg".format(batch_idx))
-            # fig = plt.figure()
-            # ax = fig.add_subplot(111, projection='3d')
-            # x = input_data[0, :, 0:3].cpu().numpy()
-            # ax.scatter(x[:,0], x[:,1], x[:,2])
-            # plt.title("{}".format(x.shape))
-            # ax.set_xlabel("X")
-            # ax.set_ylabel("Y")
-            # ax.set_zlabel("Z")
-            # plt.savefig(save_path, dpi=150)
-            # plt.close()
-            # logger.print(save_path)
-
-            # save_path = os.path.join(out_dir, "{}_true.jpg".format(batch_idx))
-            # fig = plt.figure()
-            # ax = fig.add_subplot(111, projection='3d')
-            # x = gt_data[0, :, 0:3].cpu().numpy()
-            # ax.scatter(x[:,0], x[:,1], x[:,2])
-            # plt.title("{}".format(x.shape))
-            # ax.set_xlabel("X")
-            # ax.set_ylabel("Y")
-            # ax.set_zlabel("Z")
-            # plt.savefig(save_path, dpi=150)
-            # plt.close()
 
             preds = model(lx_pos)
-            print("preds:", preds.shape, preds.device)
             emd_loss, rep_loss = loss_func(preds, hx_pos, radius_data)
             loss = emd_loss + rep_loss
 
@@ -275,17 +299,158 @@ if __name__ == '__main__':
             loss_list.append(loss.item())
             emd_loss_list.append(emd_loss.item())
             rep_loss_list.append(rep_loss.item())
-            break
-        if epoch == 0:
-            logger.print(gpu_stat.get_stat_str())
-        assert 0
+
+            # --------------------------------------------- #
+            losses = {
+                "emd": emd_loss.item(), "rep": rep_loss.item()
+            }
+            for k, v in losses.items():
+                if k not in loss_curr:
+                    loss_curr[k] = 0
+                loss_curr[k] += v / len(train_loader)
+            # --------------------------------------------- #
+
+            batch_idx += 1
+
         print(' -- epoch {}, loss {:.4f}, weighted emd loss {:.4f}, repulsion loss {:.4f}, lr {}.'.format(
             epoch, np.mean(loss_list), np.mean(emd_loss_list), np.mean(rep_loss_list), \
             optimizer.state_dict()['param_groups'][0]['lr']))
         
         if lr_scheduler is not None:
             lr_scheduler.step(epoch)
+
         if (epoch + 1) % 20 == 0:
             state = {'epoch': epoch, 'model_state': model.state_dict()}
             save_path = os.path.join(args.log_dir, 'punet_epoch_{}.pth'.format(epoch))
             torch.save(state, save_path)
+
+        # batch iteration ends
+        for k, v in loss_curr.items():
+            if k not in losses_per_epoch:
+                losses_per_epoch[k] = []
+            losses_per_epoch[k].append(v)
+
+        if epoch == 0:
+            logger.print(gpu_stat.get_stat_str())
+
+        if save_plots:
+            t0 = time.time()
+
+            # delete objs before saving new
+            files = glob.glob(os.path.join(out_dirs["trobj"], "*.obj"))
+            for f in files:
+                try:
+                    os.remove(f)
+                except OSError as e:
+                    print("Error: %s : %s" % (f, e.strerror))
+
+            with torch.no_grad():
+                patches = {} # seq_name_seq_frame_patch_idx
+                for data_tr in loader_trobj:
+                    frame = data_tr["frame"][0]
+                    seq_name = data_tr["seq_name"][0]
+                    seq_frame = data_tr["seq_frame"][0]
+                    patch_idx = int(data_tr["patch_idx"][0])
+                    key = f"{frame}_{seq_name}_{seq_frame}"
+                    lx_pos = data_tr["lx_pos"].cuda()
+                    hx_pred = model(lx_pos)
+                    hx_pos = data_tr["hx_pos"]
+                    if key not in patches:
+                        patches[key] = {}
+
+                    if patch_idx not in patches[key]:
+                        patches[key][patch_idx] = {}
+                    patches[key][patch_idx]['lx'] = lx_pos
+                    patches[key][patch_idx]['hx_pred'] = hx_pred
+                    patches[key][patch_idx]['hx_true'] = hx_pos
+                
+                # stitch
+                for key in patches.keys():
+                    d = patches[key]
+                    lxs = []
+                    hx_trues = []
+                    hx_preds = []
+                    for patch_idx in range(len(lres_clusters)):
+                        lxs.append(d[patch_idx]["lx"])
+                        hx_preds.append(d[patch_idx]["hx_pred"])
+                        hx_trues.append(d[patch_idx]["hx_true"])
+                
+                    lxs = torch.cat(lxs, dim=0)
+                    hx_trues = torch.cat(hx_trues, dim=0)
+                    hx_preds = torch.cat(hx_preds, dim=0)
+                    lxs = stitch(lxs, lshape, lres_clusters)
+                    hx_trues = stitch(hx_trues, hshape, hres_clusters)
+                    hx_preds = stitch(hx_preds, hshape, hres_clusters)
+                    write_obj_triangle(os.path.join(out_dirs["trobj"], "{}_{}_low.obj".format(epoch, key)), as_np(lxs), sd["lfaces"])
+                    write_obj_triangle(os.path.join(out_dirs["trobj"], "{}_{}_htrue.obj".format(epoch, key)), as_np(hx_trues), sd["hfaces"])
+                    write_obj_triangle(os.path.join(out_dirs["trobj"], "{}_{}_hpred.obj".format(epoch, key)), as_np(hx_preds), sd["hfaces"])
+                
+        # ===============
+        # validation
+        # ===============
+        if ((epoch - epoch0) > 0 and (epoch - epoch0) % params['chkpt_freq'] == 0):
+            plotter.plot_current_losses(plot_path, epoch0, epoch, losses_per_epoch)
+            logger.print("- {}".format(plot_path))
+
+            logger.print(gpu_stat.get_stat_str())
+
+            # validate
+            if epoch > 0:
+                with torch.no_grad():
+                    losses_val_keyframes = {}
+                    losses_val = []
+
+                    model.eval()
+                    patches = {} # seq_name_seq_frame_patch_idx
+                    for data_te in loader_val:
+                        frame = data_te["frame"][0]
+                        seq_name = data_te["seq_name"][0]
+                        seq_frame = data_te["seq_frame"][0]
+                        patch_idx = int(data_te["patch_idx"][0])
+                        key = f"{frame}_{seq_name}_{seq_frame}"
+                        lx_pos = data_te["lx_pos"].cuda()
+                        hx_pred = model(lx_pos)
+                        hx_pos = data_te["hx_pos"]
+                        if key not in patches:
+                            patches[key] = {}
+
+                        if patch_idx not in patches[key]:
+                            patches[key][patch_idx] = {}
+                        patches[key][patch_idx]['lx'] = lx_pos
+                        patches[key][patch_idx]['hx_pred'] = hx_pred
+                        patches[key][patch_idx]['hx_true'] = hx_pos
+                    
+                    # stitch
+                    for key in patches.keys():
+                        d = patches[key]
+                        lxs = []
+                        hx_trues = []
+                        hx_preds = []
+                        for patch_idx in range(len(hres_clusters)):
+                            lxs.append(d[patch_idx]["lx"])
+                            hx_preds.append(d[patch_idx]["hx_pred"])
+                            hx_trues.append(d[patch_idx]["hx_true"])
+                        lxs = torch.cat(lxs, dim=0)
+                        hx_trues = torch.cat(hx_trues, dim=0)
+                        hx_preds = torch.cat(hx_preds, dim=0)
+
+                        lxs = stitch(lxs, lshape, lres_clusters)
+                        hx_trues = stitch(hx_trues, hshape, hres_clusters)
+                        hx_preds = stitch(hx_preds, hshape, hres_clusters)
+                        write_obj_triangle(os.path.join(out_dirs["val"], "{}_{}_low.obj".format(epoch, key)), as_np(lxs), sd["lfaces"])
+                        write_obj_triangle(os.path.join(out_dirs["val"], "{}_{}_htrue.obj".format(epoch, key)), as_np(hx_trues), sd["hfaces"])
+                        write_obj_triangle(os.path.join(out_dirs["val"], "{}_{}_hpred.obj".format(epoch, key)), as_np(hx_preds), sd["hfaces"])
+
+                        loss = F.l1_loss(hx_preds, hx_trues).detach().item()*sigma
+                        losses_val.append(loss)
+
+                    model.train()
+                losses_val = np.float32(losses_val)
+
+                # save model validation losses
+                model_name_curr = "{:07d}".format(epoch)
+                model_losses[model_name_curr] = {"val": {"min": float(losses_val.min()), "max": float(losses_val.max()), "mean": float(losses_val.mean()), "std": float(losses_val.std())}}
+                save_path = os.path.join(out_dirs["model"], "model_losses.json")
+                json.dump(model_losses, open(save_path, "w+"), indent=4)
+                logger.print(f"- Model losses saved: {save_path}")
+    print("### DONE")
